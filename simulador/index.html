@@ -1,0 +1,925 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Lock e lock-free, passo a passo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#e8eef4; --surface:#ffffff; --surface-2:#f3f6f9; --line:#c4d0dc; --text:#132230; --muted:#56687a;
+  --mem:#c85f0e; --ok:#1a8f61; --fail:#cf3d35; --lock:#a87b06; --focus:#2a6fdb; --chip:#eef3f7;
+  color-scheme:light;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px);
+  padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0c1722; --surface:#13212e; --surface-2:#172938; --line:#26394b; --text:#e6edf3; --muted:#8fa2b4;
+    --mem:#f28c28; --ok:#3fc38f; --fail:#f0625a; --lock:#f2c14e; --focus:#7fb2ff; --chip:#1b2f40;
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0c1722; --surface:#13212e; --surface-2:#172938; --line:#26394b; --text:#e6edf3; --muted:#8fa2b4;
+  --mem:#f28c28; --ok:#3fc38f; --fail:#f0625a; --lock:#f2c14e; --focus:#7fb2ff; --chip:#1b2f40;
+  color-scheme:dark;
+}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:'Space Grotesk',system-ui,-apple-system,'Segoe UI',sans-serif;-webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit}
+:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
+.wrap{max-width:1440px;margin:0 auto;padding:28px clamp(16px,3vw,40px) 48px}
+header{margin-bottom:22px}
+h1{font-size:clamp(28px,3.4vw,44px);line-height:1.08;margin:0;font-weight:700;letter-spacing:-0.015em}
+.lede{max-width:70ch;color:var(--muted);margin:10px 0 0;font-size:17px;line-height:1.55}
+.app{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:20px;align-items:start}
+@media (max-width:1000px){.app{grid-template-columns:1fr}}
+.sims{display:grid;gap:20px;grid-template-columns:1fr}
+.sims.two{grid-template-columns:1fr 1fr}
+@media (max-width:1240px){.sims.two{grid-template-columns:1fr}}
+.sim{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:16px;display:flex;flex-direction:column;gap:12px;min-width:0}
+.sim-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;min-width:0}
+.sim-head h2{flex:none}
+.sim-head p{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sim-head h2{margin:0;font-size:22px;font-weight:600}
+.sim-head p{margin:0;color:var(--muted);font-size:15px}
+canvas{width:100%;height:clamp(320px,44vw,540px);display:block;border-radius:12px;background:var(--surface-2);cursor:pointer;touch-action:manipulation}
+.sims.two canvas{height:clamp(320px,30vw,460px)}
+.chips{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.chips-label{color:var(--muted);font-size:14px;margin-right:4px}
+.chip{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--line);background:var(--chip);border-radius:999px;padding:6px 12px 6px 8px;font-size:14px;cursor:pointer}
+.chip .dot{width:14px;height:14px;border-radius:50%;background:var(--c)}
+.chip[aria-pressed="true"]{border-color:var(--fail)}
+.chip[aria-pressed="true"] .state{color:var(--fail);font-weight:600}
+.chip .state{color:var(--muted)}
+.stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:0}
+.stats div{background:var(--surface-2);border-radius:10px;padding:10px 12px}
+.stats dt{font-size:13px;color:var(--muted)}
+.stats dd{margin:2px 0 0;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:24px;font-weight:700}
+.stats dd.bad{color:var(--fail)}
+.stats dd.good{color:var(--ok)}
+aside{display:flex;flex-direction:column;gap:16px}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:18px}
+.panel h3{margin:0 0 10px;font-size:17px;font-weight:600}
+.modes{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.mode{border:1px solid var(--line);background:var(--surface-2);border-radius:10px;padding:10px;text-align:left;cursor:pointer;font-size:15px;line-height:1.25}
+.mode[aria-pressed="true"]{border-color:var(--mem);box-shadow:inset 0 0 0 1px var(--mem);font-weight:600}
+.row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:14px}
+.row label,.row span.lbl{font-size:15px}
+.stepper{display:flex;align-items:center;gap:6px}
+.stepper button{width:36px;height:36px;border-radius:8px;border:1px solid var(--line);background:var(--surface-2);cursor:pointer;font-size:20px;line-height:1}
+.stepper output{min-width:28px;text-align:center;font-family:'JetBrains Mono',monospace;font-weight:700;font-size:18px}
+input[type=range]{width:130px;accent-color:var(--mem)}
+.speedval{font-family:'JetBrains Mono',monospace;font-size:14px;color:var(--muted);min-width:44px;text-align:right}
+.actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:16px}
+.btn{border:1px solid var(--line);background:var(--surface-2);border-radius:10px;padding:10px 12px;cursor:pointer;font-size:15px}
+.btn.primary{background:var(--mem);border-color:var(--mem);color:#fff;font-weight:600;grid-column:1 / -1}
+.btn.wide{grid-column:1 / -1}
+.explain{font-size:15.5px;line-height:1.55;margin:0}
+.explain + .explain{margin-top:8px}
+.legend{display:grid;gap:7px;font-size:14px;margin:0;padding:0;list-style:none}
+.legend li{display:flex;gap:10px;align-items:center}
+.legend i{width:12px;height:12px;border-radius:50%;flex:none}
+#log{list-style:none;margin:0;padding:0;max-height:300px;overflow:auto;font-size:13.5px;line-height:1.4;display:flex;flex-direction:column;gap:6px}
+#log li{display:flex;gap:8px;align-items:flex-start}
+#log .dot{width:10px;height:10px;border-radius:50%;margin-top:5px;flex:none}
+#log .where{color:var(--muted);flex:none;min-width:44px}
+#log li.bad .txt{color:var(--fail)}
+#log li.good .txt{color:var(--ok)}
+.group-lbl{font-size:13px;color:var(--muted);margin:14px 0 8px;letter-spacing:.02em}
+.group-lbl:first-of-type{margin-top:0}
+.seg{display:flex;flex-wrap:wrap;gap:8px}
+.seg .mode{flex:1 1 auto}
+canvas.scen{height:clamp(380px,46vw,560px);cursor:default}
+.narr{background:var(--surface-2);border-radius:12px;padding:14px 16px;min-height:96px}
+.stepno{margin:0 0 4px;font-size:13px;color:var(--muted);font-family:'JetBrains Mono',monospace}
+.narrtxt{margin:0;font-size:17px;line-height:1.55;max-width:80ch}
+.stepbar{display:flex;flex-wrap:wrap;gap:8px}
+.stepbar .btn{flex:0 1 auto}
+.stepbar .btn.primary{grid-column:auto}
+.btn:disabled{opacity:.45;cursor:default}
+
+/* ---- layout em tela única ---- */
+.cv{position:relative;height:clamp(320px,52vw,520px)}
+.cv canvas,.cv canvas.scen,.sims.two .cv canvas{position:absolute;inset:0;width:100%;height:100%}
+.app{grid-template-columns:minmax(0,1fr)}
+@media (min-width:1100px){
+  html,body{height:100%}
+  body{overflow:hidden}
+  .wrap{height:100%;display:flex;flex-direction:column;max-width:none;padding:12px 18px}
+  header{flex:none;display:flex;align-items:baseline;gap:18px;margin-bottom:10px}
+  h1{font-size:24px;white-space:nowrap}
+  .lede{margin:0;font-size:14px;line-height:1.4;max-width:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+  .app{flex:1;min-height:0;display:grid;grid-template-columns:250px minmax(0,1fr) 300px;grid-template-rows:minmax(0,1fr);gap:12px;align-items:stretch}
+  .app>main{overflow:hidden}
+  .sims,.sims.two{grid-template-rows:minmax(0,1fr)}
+  .app>aside{min-height:0;overflow:auto;display:flex;flex-direction:column;gap:10px}
+  .app>main{min-height:0}
+  .sims,.sims.two{height:100%;gap:12px}
+  .sims.two{grid-template-columns:1fr 1fr}
+  .sim{min-height:0;padding:12px;gap:8px;border-radius:12px}
+  .sim-head h2{font-size:18px}
+  .sim-head p{font-size:13px}
+  .cv{flex:1;min-height:0;height:auto}
+  .panel{padding:12px 14px;border-radius:12px}
+  .panel h3{font-size:15px;margin-bottom:8px}
+  .group-lbl{margin:10px 0 6px;font-size:12px}
+  .modes{gap:6px}
+  .mode{padding:7px 9px;font-size:13.5px;border-radius:8px}
+  .row{margin-top:10px}
+  .row label,.row span.lbl{font-size:14px}
+  .stepper button{width:30px;height:30px;font-size:17px}
+  input[type=range]{width:90px}
+  .speedval{min-width:34px}
+  .actions{gap:6px;margin-top:12px}
+  .btn{padding:8px 10px;font-size:14px;border-radius:8px}
+  .hint{display:none}
+  .explain{font-size:14px;line-height:1.5}
+  .legend{font-size:13px;gap:5px}
+  #logPanel{flex:1;min-height:140px;display:flex;flex-direction:column}
+  #log{max-height:none;flex:1;min-height:0;font-size:13px}
+  .chips{gap:6px}
+  .chips-label{font-size:12.5px}
+  .chip{padding:4px 10px 4px 6px;font-size:13px}
+  .stats{gap:6px}
+  .stats div{padding:6px 10px;border-radius:8px}
+  .stats dt{font-size:12px}
+  .stats dd{font-size:19px}
+  .evnarr{padding:8px 12px}
+  .evnarr .stepno{display:none}
+  .evnarr .narrtxt{font-size:15px}
+  .narr{min-height:0;padding:10px 14px}
+  .narrtxt{font-size:16px}
+  .stepbar{gap:6px}
+}
+[hidden]{display:none !important}
+#play[hidden] + #reset{grid-column:1 / -1}
+.evnarr{min-height:0;padding:12px 16px}
+.evnarr .narrtxt{font-size:16px}
+.narrtxt.bad{color:var(--fail)}
+.narrtxt.good{color:var(--ok)}
+.hint{font-size:14px;color:var(--muted);margin:10px 0 0}
+@media (max-width:560px){.stats dd{font-size:20px}.modes{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+<h1>Lock e lock-free, passo a passo</h1>
+<p class="lede">Conta bancária compartilhada: cada thread faz depósitos de R$ 1. Clique em uma thread para suspendê-la, como se o escalonador a tirasse da CPU.</p>
+</header>
+
+<div class="app">
+<aside class="left">
+<section class="panel" aria-labelledby="h-modo">
+<h3 id="h-modo">Modo</h3>
+<p class="group-lbl">Simulação contínua</p>
+<div class="modes" role="group" aria-label="Simulação contínua">
+<button class="mode" data-mode="none" aria-pressed="false">Sem sincronização</button>
+<button class="mode" data-mode="lock" aria-pressed="false">Com lock</button>
+<button class="mode" data-mode="cas" aria-pressed="false">Lock-free (CAS)</button>
+<button class="mode" data-mode="compare" aria-pressed="true">Lock x lock-free</button>
+</div>
+<p class="group-lbl">Cenários passo a passo</p>
+<div class="modes" role="group" aria-label="Cenários passo a passo">
+<button class="mode" data-mode="deadlock" aria-pressed="false">Deadlock</button>
+<button class="mode" data-mode="aba" aria-pressed="false">Problema ABA</button>
+<button class="mode" data-mode="ms" aria-pressed="false">Fila Michael-Scott</button>
+</div>
+<div id="contControls">
+<p class="group-lbl" style="margin-top:14px">Execução</p>
+<div class="seg" role="group" aria-label="Execução">
+<button class="mode" data-run="step" aria-pressed="true">Passo a passo</button>
+<button class="mode" data-run="cont" aria-pressed="false">Contínuo</button>
+</div>
+<div class="row"><span class="lbl">Threads</span><div class="stepper"><button id="tm" aria-label="Menos threads">−</button><output id="tn">3</output><button id="tp" aria-label="Mais threads">+</button></div></div>
+<div class="row"><label for="speed">Velocidade</label><div style="display:flex;align-items:center;gap:8px"><input id="speed" type="range" min="0.25" max="2.5" step="0.25" value="1"><span class="speedval" id="speedval">1x</span></div></div>
+<div class="actions">
+<button class="btn primary" id="stepBtn">Próximo passo →</button>
+<button class="btn wide" id="worst">Suspender no pior momento</button>
+<button class="btn" id="play" hidden>Pausar</button>
+<button class="btn" id="reset">Reiniciar</button>
+<button class="btn wide" id="resumeAll">Retomar todas as threads</button>
+</div>
+<p class="hint" id="runHint">Cada clique avança até a próxima operação chegar à memória: uma leitura, uma gravação, um pedido de lock ou um CAS. Atalho: tecla →.</p>
+</div>
+<p class="hint" id="scenHint" hidden>Use os botões abaixo da animação ou as setas ← e → do teclado.</p>
+</section>
+</aside>
+
+<main class="sims two" id="sims"></main>
+
+<aside class="right">
+<section class="panel" aria-labelledby="h-obs">
+<h3 id="h-obs">O que observar</h3>
+<div id="explain"></div>
+</section>
+
+<section class="panel" id="legPanel" aria-labelledby="h-leg">
+<h3 id="h-leg">Mensagens</h3>
+<ul class="legend">
+<li><i style="background:var(--muted)"></i>Pedido da thread para a memória (cor da thread)</li>
+<li><i style="background:var(--mem)"></i>Valor lido voltando da memória</li>
+<li><i style="background:var(--ok)"></i>Lock concedido ou CAS bem-sucedido</li>
+<li><i style="background:var(--fail)"></i>CAS falhou ou gravação por cima</li>
+<li><i style="background:var(--lock)"></i>Thread esperando na fila do lock</li>
+</ul>
+</section>
+
+<section class="panel" id="logPanel" aria-labelledby="h-log">
+<h3 id="h-log">Registro de eventos</h3>
+<ol id="log" aria-live="off"></ol>
+</section>
+</aside>
+</div>
+</div>
+
+<script>
+(function(){
+'use strict';
+const COLORS=['#3d8fd9','#9b6be0','#16a596','#e05f93','#6aaa2e','#d3922a','#5b7cf0','#e0703f'];
+const BASE={travel:1000, compute:950, thinkMin:450, thinkMax:1800};
+const TITLES={
+  none:{t:'Sem sincronização',s:'saldo++ direto na memória',w:'Sem sync'},
+  lock:{t:'Com lock (mutex)',s:'uma thread por vez na seção crítica',w:'Lock'},
+  cas:{t:'Lock-free com CAS',s:'tenta e repete se outra thread passou na frente',w:'CAS'}
+};
+const EXPLAIN={
+  none:['Cada thread lê o saldo, soma 1 no próprio registrador e grava de volta. Quando duas leem o mesmo valor, a segunda gravação apaga a primeira.','Compare “Depósitos feitos” com “Saldo na memória”. A diferença é o número de depósitos perdidos: é a condição de corrida do slide 4.'],
+  lock:['Antes de ler, a thread pede o lock. Só o dono entra na seção crítica; as outras ficam na fila, em amarelo.','Clique em “Suspender no pior momento”: o dono do lock é suspenso segurando o lock, e todas as threads param. Isso é o comportamento bloqueante.'],
+  cas:['Ninguém tranca nada. A thread lê, calcula e tenta o CAS: “grave o novo valor só se o saldo ainda for o que eu li”.','Quando outra thread grava antes, o CAS falha em vermelho e a thread relê e tenta de novo. Suspenda qualquer thread: as outras continuam. Isso é lock-free.'],
+  deadlock:['Mesma conta bancária, agora com duas contas e um lock em cada (fine-grained locking).','Na primeira metade, transferências em sentidos opostos travam os locks em ordens diferentes e formam uma espera circular. Na segunda, a ordem global de aquisição elimina o ciclo.'],
+  aba:['Pilha lock-free de Treiber guardando transações pendentes, em C, com um pool que reaproveita nós liberados.','Sem versão, o CAS de T1 aceita o endereço 0x10 reciclado e a pilha se corrompe. Ative “Com versão” e repita: o contador muda a cada alteração e o CAS falha como deveria.'],
+  ms:['Fila de transações a processar. head aponta para o sentinela; tail aponta para o último nó, ou fica atrasado por um instante.','Observe o passo em que T1 é suspensa com tail atrasado: em vez de esperar, T2 avança tail por ela. Essa ajuda mútua é o que torna a fila lock-free.'],
+  compare:['À esquerda, o saldo protegido por lock. À direita, o mesmo saldo com CAS. As duas versões ficam corretas: nenhum depósito se perde.','Agora clique em “Suspender no pior momento”. No lock, o dono é suspenso com o lock na mão e todos param. No CAS, a thread suspensa não segura nada e as outras seguem.']
+};
+const state={mode:'compare',n:3,speed:1,running:false,stepMode:true,pauseAfterTick:false,idle:0,sims:[]};
+const reduceMotion=window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+const simsEl=document.getElementById('sims');
+const logEl=document.getElementById('log');
+const rand=(a,b)=>a+Math.random()*(b-a);
+
+function theme(){
+  const cs=getComputedStyle(document.documentElement);
+  const g=k=>cs.getPropertyValue(k).trim();
+  return {surface:g('--surface'),surface2:g('--surface-2'),line:g('--line'),text:g('--text'),muted:g('--muted'),mem:g('--mem'),ok:g('--ok'),fail:g('--fail'),lock:g('--lock')};
+}
+
+function log(sim,t,text,cls){
+  const li=document.createElement('li');
+  if(cls) li.className=cls;
+  const dot=document.createElement('span');dot.className='dot';dot.style.background=t?t.color:'var(--muted)';
+  const where=document.createElement('span');where.className='where';where.textContent=TITLES[sim.kind].w;
+  const txt=document.createElement('span');txt.className='txt';txt.textContent=text;
+  li.append(dot,where,txt);
+  logEl.prepend(li);
+  if(sim.setNarr)sim.setNarr(text,cls);
+  if(state.stepMode&&state.running)state.pauseAfterTick=true;
+  while(logEl.children.length>90) logEl.lastChild.remove();
+}
+
+class Sim{
+  constructor(kind){
+    this.kind=kind;
+    const sec=document.createElement('section');sec.className='sim';
+    sec.innerHTML='<div class="sim-head"><h2></h2><p></p></div><div class="cv"><canvas role="img"></canvas></div><div class="narr evnarr"><p class="stepno">Último evento</p><p class="narrtxt">Clique em “Próximo passo” para começar.</p></div><div class="chips"></div><dl class="stats"></dl>';
+    sec.querySelector('h2').textContent=TITLES[kind].t;
+    sec.querySelector('p').textContent=TITLES[kind].s;
+    this.canvas=sec.querySelector('canvas');
+    this.canvas.setAttribute('aria-label','Animação: '+TITLES[kind].t+'. Threads ao redor da memória compartilhada.');
+    this.ctx=this.canvas.getContext('2d');
+    this.chipsEl=sec.querySelector('.chips');
+    this.statsEl=sec.querySelector('.stats');
+    this.narrEl=sec.querySelector('.evnarr');this.narrTxt=this.narrEl.querySelector('.narrtxt');this.narrEl.hidden=!state.stepMode;
+    this.el=sec;
+    this.canvas.addEventListener('click',e=>this.onClick(e));
+    this.reset();
+  }
+  setNarr(text,cls){this.narrTxt.textContent=text;this.narrTxt.className='narrtxt'+(cls?' '+cls:'')}
+  reset(){
+    this.mem=0;this.ops=0;this.casFail=0;this.waitMs=0;
+    this.lock={owner:null,queue:[]};
+    this.packets=[];this.fx=[];this.auto=null;
+    this.threads=Array.from({length:state.n},(_,i)=>({id:i,name:'T'+(i+1),color:COLORS[i],phase:'think',timer:rand(150,1300),dur:1300,reg:null,novo:null,suspended:false,pending:null,step:null,x:0,y:0,r:28}));
+    this.renderChips();this.renderStats(true);
+  }
+  renderChips(){
+    this.chipsEl.innerHTML='';
+    const lbl=document.createElement('span');lbl.className='chips-label';lbl.textContent='Suspender:';
+    this.chipsEl.append(lbl);
+    this.threads.forEach(t=>{
+      const b=document.createElement('button');b.className='chip';b.style.setProperty('--c',t.color);
+      b.innerHTML='<span class="dot"></span><span class="nm"></span><span class="state"></span>';
+      b.querySelector('.nm').textContent=t.name;
+      b.addEventListener('click',()=>this.toggle(t));
+      t.chip=b;this.updateChip(t);
+      this.chipsEl.append(b);
+    });
+  }
+  updateChip(t){
+    if(!t.chip) return;
+    t.chip.setAttribute('aria-pressed',t.suspended?'true':'false');
+    t.chip.querySelector('.state').textContent=t.suspended?'suspensa':'rodando';
+    t.chip.setAttribute('aria-label',t.name+(t.suspended?', suspensa. Clique para retomar':', rodando. Clique para suspender'));
+  }
+  renderStats(force){
+    const rows=[['Saldo na memória',String(this.mem),''],['Depósitos feitos',String(this.ops),'']];
+    if(this.kind==='none'){const lost=this.ops-this.mem;rows.push(['Depósitos perdidos',String(lost),lost>0?'bad':''])}
+    if(this.kind==='lock'){rows.push(['Tempo na fila do lock',(this.waitMs/1000).toFixed(1).replace('.',',')+' s',''])}
+    if(this.kind==='cas'){rows.push(['CAS que falharam',String(this.casFail),''])}
+    const key=rows.map(r=>r[1]+r[2]).join('|');
+    if(!force&&key===this._k) return;
+    this._k=key;
+    this.statsEl.innerHTML='';
+    rows.forEach(([a,b,c])=>{const d=document.createElement('div');const dt=document.createElement('dt');dt.textContent=a;const dd=document.createElement('dd');dd.textContent=b;if(c)dd.className=c;d.append(dt,dd);this.statsEl.append(d)});
+  }
+  toggle(t,why){
+    t.suspended=!t.suspended;
+    this.updateChip(t);
+    if(t.suspended){
+      const holds=this.kind==='lock'&&this.lock.owner===t;
+      log(this,t,t.name+' suspensa'+(why?' '+why:'')+(holds?', segurando o lock':''),holds?'bad':'');
+    } else log(this,t,t.name+' retomada');
+  }
+  suspendWorst(){
+    if(this.kind==='lock'){
+      const o=this.lock.owner;
+      if(o&&!o.suspended&&o.step!=='release'){this.toggle(o,'no meio da seção crítica');return}
+      this.auto='holder';log(this,null,'A próxima thread que ganhar o lock será suspensa');
+    } else {
+      const t=this.threads.find(x=>!x.suspended&&x.phase==='compute');
+      if(t){this.toggle(t,'entre a leitura e a gravação');return}
+      this.auto='mid';log(this,null,'A próxima thread que ler o saldo será suspensa');
+    }
+  }
+  send(t,kind,label,data){this.packets.push({t,dir:'out',kind,label,data,p:0,color:t.color})}
+  reply(t,kind,label,data){
+    const th=theme();
+    const color=kind==='val'?th.mem:(kind==='granted'||kind==='casok')?th.ok:kind==='casfail'?th.fail:th.muted;
+    this.packets.push({t,dir:'in',kind,label,data,p:0,color});
+  }
+  flash(kind,text){if(state.stepMode)this.fx=[];this.fx.push({kind,text,age:0})}
+  doRead(t){t.phase='await';t.step='read';this.send(t,'read','ler')}
+  startOp(t){
+    if(this.kind==='lock'){t.phase='await';t.step='acquire';this.send(t,'acquire','lock?')}
+    else this.doRead(t);
+  }
+  finish(t){t.phase='think';t.timer=t.dur=rand(BASE.thinkMin,BASE.thinkMax);t.step=null;t.reg=null;t.novo=null}
+  arriveMem(pk){
+    const t=pk.t;
+    switch(pk.kind){
+      case 'read':{const v=this.mem;this.reply(t,'val',String(v),{v});log(this,t,t.name+' leu '+v);break}
+      case 'write':{
+        const prev=this.mem;
+        if(prev!==t.reg){this.flash('fail',t.name+' gravou por cima');log(this,t,t.name+' gravou '+t.novo+', mas tinha lido '+t.reg+' e o saldo já era '+prev+': um depósito foi perdido','bad')}
+        else log(this,t,t.name+' gravou '+t.novo);
+        this.mem=t.novo;this.ops++;this.reply(t,'ack','ok');break}
+      case 'cas':{
+        if(this.mem===t.reg){this.mem=t.novo;this.ops++;this.flash('ok',t.name+': CAS ok');this.reply(t,'casok','ok');log(this,t,t.name+': CAS('+t.reg+' → '+t.novo+') deu certo','good')}
+        else{this.casFail++;this.flash('fail',t.name+': CAS falhou');this.reply(t,'casfail','falhou');log(this,t,t.name+': CAS('+t.reg+' → '+t.novo+') falhou, o saldo já era '+this.mem,'bad')}
+        break}
+      case 'acquire':{
+        if(!this.lock.owner){this.lock.owner=t;this.reply(t,'granted','é seu');log(this,t,t.name+' pegou o lock','good')}
+        else{this.lock.queue.push(t);t.phase='waitlock';log(this,t,t.name+' encontrou o lock com '+this.lock.owner.name+' e entrou na fila')}
+        break}
+      case 'release':{
+        this.lock.owner=null;this.reply(t,'ack','ok');log(this,t,t.name+' liberou o lock');
+        if(this.lock.queue.length){const nx=this.lock.queue.shift();this.lock.owner=nx;this.reply(nx,'granted','sua vez');log(this,nx,'Lock passa para '+nx.name,'good')}
+        break}
+    }
+  }
+  onReply(t,pk){
+    switch(pk.kind){
+      case 'val':
+        t.reg=pk.data.v;t.novo=t.reg+1;t.phase='compute';t.timer=t.dur=BASE.compute*rand(0.8,1.35);
+        if(this.auto==='mid'&&this.kind!=='lock'){this.auto=null;this.toggle(t,'entre a leitura e a gravação')}
+        break;
+      case 'ack':
+        if(this.kind==='lock'&&t.step==='write'){t.phase='await';t.step='release';this.send(t,'release','unlock')}
+        else this.finish(t);
+        break;
+      case 'granted':
+        if(this.auto==='holder'){this.auto=null;t.pending=pk;t.phase='holding';this.toggle(t,'logo após pegar o lock');return}
+        this.doRead(t);break;
+      case 'casok':this.finish(t);break;
+      case 'casfail':t.phase='await';this.doRead(t);break;
+    }
+  }
+  update(dt){
+    for(const pk of this.packets) pk.p+=dt/BASE.travel;
+    const done=this.packets.filter(p=>p.p>=1);
+    this.packets=this.packets.filter(p=>p.p<1);
+    for(const pk of done){if(pk.dir==='out') this.arriveMem(pk); else pk.t.pending=pk}
+    for(const t of this.threads){
+      if(t.phase==='waitlock') this.waitMs+=dt;
+      if(t.suspended) continue;
+      if(t.pending){const pk=t.pending;t.pending=null;if(t.phase==='holding')t.phase='await';this.onReply(t,pk);continue}
+      if(t.phase==='think'||t.phase==='compute'){
+        t.timer-=dt*(t.phase==='think'&&state.stepMode?3:1);
+        if(t.timer<=0){
+          if(t.phase==='think') this.startOp(t);
+          else{t.phase='await';
+            if(this.kind==='cas'){t.step='cas';this.send(t,'cas','CAS '+t.reg+'→'+t.novo)}
+            else{t.step='write';this.send(t,'write','grava '+t.novo)}
+          }
+        }
+      }
+    }
+    for(const f of this.fx) f.age+=dt;
+    this.fx=this.fx.filter(f=>f.age<1100);
+    this.renderStats(false);
+  }
+  status(t){
+    if(t.suspended) return (this.kind==='lock'&&this.lock.owner===t)?'suspensa com o lock':'suspensa';
+    switch(t.phase){
+      case 'think':return 'trabalho local';
+      case 'compute':return 'calcula '+t.reg+' + 1';
+      case 'waitlock':return 'na fila do lock';
+      case 'holding':return 'com o lock';
+      case 'await':
+        if(t.step==='read') return 'lendo';
+        if(t.step==='write') return 'gravando '+t.novo;
+        if(t.step==='cas') return 'tentando CAS';
+        if(t.step==='acquire') return 'pede o lock';
+        if(t.step==='release') return 'libera o lock';
+    }
+    return '';
+  }
+  layout(w,h){
+    const n=this.threads.length;
+    const r=Math.max(18,Math.min(30,Math.min(w,h)*0.055));
+    const st=-Math.PI/2+(n===2?Math.PI/2:0);
+    const ang=this.threads.map((t,i)=>st+i*2*Math.PI/n);
+    const sn=ang.map(Math.sin), cs=ang.map(Math.cos);
+    const sMin=Math.min(...sn), sMax=Math.max(...sn), cMin=Math.min(...cs), cMax=Math.max(...cs);
+    const padY=r+58, padX=74;
+    const spanS=sMax-sMin, spanC=cMax-cMin;
+    // usa toda a altura disponível, qualquer que seja a forma do polígono
+    let Ry=spanS>0.01?Math.max(50,(h-2*padY)/spanS):Math.max(50,h/2-padY);
+    let Rx=spanC>0.01?Math.max(40,Math.min((w-2*padX)/spanC,Ry*(n>4?1.9:1.35))):Ry;
+    if(spanS<=0.01)Ry=Rx;
+    const cy=spanS>0.01?padY-Ry*sMin:h/2;
+    const cx=spanC>0.01?w/2-Rx*(cMax+cMin)/2:w/2;
+    ang.forEach((a,i)=>{const t=this.threads[i];t.x=cx+Rx*Math.cos(a);t.y=cy+Ry*Math.sin(a);t.r=r});
+    const R=Math.min(Rx,Ry);
+    const bw=Math.max(84,Math.min(136,w*0.3,2*(Rx*0.8-r-16)));
+    const bh=Math.max(52,Math.min(80,h*0.18,Ry*0.9-r));
+    return {cx,cy,R,bw,bh};
+  }
+  onClick(e){
+    const rect=this.canvas.getBoundingClientRect();
+    const x=e.clientX-rect.left,y=e.clientY-rect.top;
+    for(const t of this.threads){if(Math.hypot(t.x-x,t.y-y)<=t.r+10){this.toggle(t);return}}
+  }
+  ends(t,cx,cy,bw,bh){
+    const dx=cx-t.x,dy=cy-t.y,d=Math.hypot(dx,dy)||1;
+    const ux=dx/d,uy=dy/d;
+    const sx=t.x+ux*(t.r+4),sy=t.y+uy*(t.r+4);
+    const k=Math.min((bw/2+8)/Math.abs(ux||1e-6),(bh/2+8)/Math.abs(uy||1e-6));
+    return {sx,sy,ex:cx-ux*k,ey:cy-uy*k};
+  }
+  draw(th){
+    const c=this.canvas,ctx=this.ctx;
+    const rect=c.getBoundingClientRect();
+    const dpr=Math.min(window.devicePixelRatio||1,2);
+    const W=Math.round(rect.width*dpr),H=Math.round(rect.height*dpr);
+    if(!W||!H) return;
+    if(c.width!==W||c.height!==H){c.width=W;c.height=H}
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+    const w=rect.width,h=rect.height;
+    ctx.clearRect(0,0,w,h);
+    const {cx,cy,bw,bh}=this.layout(w,h);
+    for(const t of this.threads){
+      const e=this.ends(t,cx,cy,bw,bh);
+      ctx.save();
+      if(t.phase==='waitlock'){ctx.strokeStyle=th.lock;ctx.setLineDash([6,6]);ctx.lineWidth=2.5}
+      else{ctx.strokeStyle=th.line;ctx.lineWidth=1.5}
+      ctx.beginPath();ctx.moveTo(e.sx,e.sy);ctx.lineTo(e.ex,e.ey);ctx.stroke();ctx.restore();
+    }
+    this.fx.forEach((f,i)=>{
+      const a=1-f.age/1100;const col=f.kind==='ok'?th.ok:th.fail;
+      ctx.save();ctx.globalAlpha=Math.max(0,a);
+      if(!reduceMotion){ctx.strokeStyle=col;ctx.lineWidth=3;rr(ctx,cx-bw/2-f.age/40,cy-bh/2-f.age/40,bw+f.age/20,bh+f.age/20,14+f.age/40);ctx.stroke()}
+      ctx.fillStyle=col;ctx.font='600 14px "Space Grotesk",sans-serif';ctx.textAlign='center';
+      ctx.fillText(f.text,cx,cy-bh/2-14-i*18-(reduceMotion?0:f.age/45));
+      ctx.restore();
+    });
+    ctx.save();
+    ctx.fillStyle=th.surface;ctx.strokeStyle=th.mem;ctx.lineWidth=2.5;
+    rr(ctx,cx-bw/2,cy-bh/2,bw,bh,14);ctx.fill();ctx.stroke();
+    ctx.fillStyle=th.muted;ctx.font='500 13px "Space Grotesk",sans-serif';ctx.textAlign='center';
+    ctx.fillText('conta · saldo',cx,cy-bh*0.16);
+    const fs=Math.round(Math.max(20,Math.min(30,bh*0.4)));
+    ctx.fillStyle=th.text;ctx.font='700 '+fs+'px "JetBrains Mono",monospace';
+    ctx.fillText(String(this.mem),cx,cy+bh*0.3);
+    ctx.restore();
+    if(this.kind==='lock'){
+      const lx=cx+bw/2-4,ly=cy-bh/2+2;
+      const own=this.lock.owner;
+      const col=own?own.color:th.muted;
+      ctx.save();ctx.strokeStyle=col;ctx.lineWidth=3.5;
+      ctx.beginPath();ctx.arc(lx,ly-10,8,Math.PI,0);ctx.stroke();
+      ctx.fillStyle=col;rr(ctx,lx-12,ly-10,24,19,4);ctx.fill();
+      ctx.fillStyle=th.surface;ctx.beginPath();ctx.arc(lx,ly-1,2.6,0,Math.PI*2);ctx.fill();
+      ctx.restore();
+      ctx.save();ctx.textAlign='center';ctx.font='600 14px "Space Grotesk",sans-serif';
+      ctx.fillStyle=own?th.text:th.muted;
+      ctx.fillText(own?'lock com '+own.name:'lock livre',cx,cy+bh/2+20);
+      if(this.lock.queue.length){
+        ctx.fillStyle=th.lock;ctx.font='500 13px "Space Grotesk",sans-serif';
+        ctx.fillText('fila: '+this.lock.queue.map(q=>q.name).join(', '),cx,cy+bh/2+38);
+      }
+      ctx.restore();
+    } else if(this.kind==='cas'){
+      ctx.save();ctx.textAlign='center';ctx.font='500 13px "Space Grotesk",sans-serif';ctx.fillStyle=th.muted;
+      ctx.restore();
+    }
+    for(const t of this.threads){
+      ctx.save();
+      if(t.phase==='waitlock'&&!t.suspended){ctx.strokeStyle=th.lock;ctx.lineWidth=3;ctx.globalAlpha=0.55;ctx.beginPath();ctx.arc(t.x,t.y,t.r+8,0,Math.PI*2);ctx.stroke();ctx.globalAlpha=1}
+      if(t.phase==='compute'&&!t.suspended){
+        const f=1-Math.max(0,t.timer)/t.dur;
+        ctx.strokeStyle=t.color;ctx.lineWidth=4;ctx.lineCap='round';
+        ctx.beginPath();ctx.arc(t.x,t.y,t.r+7,-Math.PI/2,-Math.PI/2+f*Math.PI*2);ctx.stroke();
+      }
+      ctx.fillStyle=t.suspended?th.surface2:th.surface;
+      ctx.strokeStyle=t.suspended?th.muted:t.color;ctx.lineWidth=3.5;
+      if(t.suspended)ctx.setLineDash([5,5]);
+      ctx.beginPath();ctx.arc(t.x,t.y,t.r,0,Math.PI*2);ctx.fill();ctx.stroke();ctx.setLineDash([]);
+      if(this.kind==='lock'&&this.lock.owner===t){ctx.fillStyle=t.color;ctx.globalAlpha=0.18;ctx.beginPath();ctx.arc(t.x,t.y,t.r-2,0,Math.PI*2);ctx.fill();ctx.globalAlpha=1}
+      ctx.textAlign='center';ctx.textBaseline='middle';
+      if(t.suspended){
+        ctx.fillStyle=th.muted;rr(ctx,t.x-8,t.y-9,5,18,1.5);ctx.fill();rr(ctx,t.x+3,t.y-9,5,18,1.5);ctx.fill();
+      } else {
+        ctx.fillStyle=th.text;ctx.font='700 16px "Space Grotesk",sans-serif';ctx.fillText(t.name,t.x,t.y+1);
+      }
+      ctx.textBaseline='alphabetic';
+      const below=t.y>=cy-1;
+      const sy=below?t.y+t.r+22:t.y-t.r-26;
+      ctx.font='500 13px "Space Grotesk",sans-serif';ctx.fillStyle=t.suspended?th.fail:th.muted;
+      ctx.fillText((t.suspended?t.name+' ':'')+this.status(t),t.x,sy);
+      if(t.reg!==null){
+        ctx.font='600 12.5px "JetBrains Mono",monospace';ctx.fillStyle=th.text;
+        ctx.fillText('registrador = '+t.reg,t.x,below?sy+17:sy-17);
+      }
+      ctx.restore();
+    }
+    for(const pk of this.packets){
+      const e=this.ends(pk.t,cx,cy,bw,bh);
+      const p=easeInOut(pk.p);
+      const x=pk.dir==='out'?e.sx+(e.ex-e.sx)*p:e.ex+(e.sx-e.ex)*p;
+      const y=pk.dir==='out'?e.sy+(e.ey-e.sy)*p:e.ey+(e.sy-e.ey)*p;
+      ctx.save();
+      ctx.fillStyle=pk.color;ctx.beginPath();ctx.arc(x,y,7,0,Math.PI*2);ctx.fill();
+      ctx.font='600 12px "JetBrains Mono",monospace';
+      const tw=ctx.measureText(pk.label).width+12;
+      ctx.fillStyle=th.surface;ctx.globalAlpha=0.92;rr(ctx,x+10,y-10,tw,20,6);ctx.fill();ctx.globalAlpha=1;
+      ctx.strokeStyle=pk.color;ctx.lineWidth=1.2;rr(ctx,x+10,y-10,tw,20,6);ctx.stroke();
+      ctx.fillStyle=th.text;ctx.textAlign='left';ctx.textBaseline='middle';ctx.fillText(pk.label,x+16,y+0.5);
+      ctx.restore();
+    }
+  }
+}
+function rr(ctx,x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath()}
+function easeInOut(p){return p<0.5?2*p*p:1-Math.pow(-2*p+2,2)/2}
+
+/* ---------- Cenários passo a passo ---------- */
+const TC={T1:'#3d8fd9',T2:'#9b6be0',T3:'#16a596'};
+function arrow(ctx,x1,y1,x2,y2,col,opt){
+  opt=opt||{};
+  const w=opt.w||2.5,head=opt.head===false?0:10;
+  const a=Math.atan2(y2-y1,x2-x1);
+  ctx.save();ctx.strokeStyle=col;ctx.fillStyle=col;ctx.lineWidth=w;ctx.lineCap='round';
+  if(opt.dash)ctx.setLineDash(opt.dash);
+  ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2-Math.cos(a)*head*0.7,y2-Math.sin(a)*head*0.7);ctx.stroke();ctx.setLineDash([]);
+  if(head){ctx.beginPath();ctx.moveTo(x2,y2);ctx.lineTo(x2-head*Math.cos(a-0.45),y2-head*Math.sin(a-0.45));ctx.lineTo(x2-head*Math.cos(a+0.45),y2-head*Math.sin(a+0.45));ctx.closePath();ctx.fill()}
+  ctx.restore();
+}
+function tag(ctx,x,y,text,col,th,align){
+  ctx.save();ctx.font='600 13px "Space Grotesk",sans-serif';
+  const tw=ctx.measureText(text).width+14;
+  const x0=align==='left'?x:x-tw/2;
+  ctx.fillStyle=th.surface;rr(ctx,x0,y-11,tw,22,6);ctx.fill();
+  ctx.strokeStyle=col;ctx.lineWidth=1.3;rr(ctx,x0,y-11,tw,22,6);ctx.stroke();
+  ctx.fillStyle=col;ctx.textAlign='left';ctx.textBaseline='middle';ctx.fillText(text,x0+7,y+0.5);ctx.restore();
+}
+function padlock(ctx,x,y,col,th){
+  ctx.save();ctx.fillStyle=th.surface;ctx.beginPath();ctx.arc(x,y,20,0,Math.PI*2);ctx.fill();
+  ctx.strokeStyle=col;ctx.lineWidth=3;ctx.beginPath();ctx.arc(x,y-4,6,Math.PI,0);ctx.stroke();
+  ctx.fillStyle=col;rr(ctx,x-9,y-4,18,13,3);ctx.fill();ctx.restore();
+}
+function wrapLines(ctx,text,maxW){
+  const words=text.split(' ');const out=[];let line='';
+  for(const w of words){const t=line?line+' '+w:w;if(ctx.measureText(t).width>maxW&&line){out.push(line);line=w}else line=t}
+  if(line)out.push(line);return out;
+}
+function cardH(ctx,w,lines){ctx.save();ctx.font='500 13.5px "Space Grotesk",sans-serif';let n=0;lines.forEach(l=>{n+=l.mono?1:wrapLines(ctx,l.t,w-24).length});ctx.restore();return 40+n*19}
+function threadCard(ctx,x,y,w,name,lines,col,th,susp){
+  ctx.save();ctx.font='500 13.5px "Space Grotesk",sans-serif';
+  let all=[];lines.forEach(l=>{all=all.concat(l.mono?[{t:l.t,mono:true}]:wrapLines(ctx,l.t,w-24).map(t=>({t})))});
+  const h=40+all.length*19;
+  ctx.fillStyle=th.surface;ctx.strokeStyle=susp?th.muted:col;ctx.lineWidth=2.5;if(susp)ctx.setLineDash([6,5]);
+  rr(ctx,x,y,w,h,12);ctx.fill();ctx.stroke();ctx.setLineDash([]);
+  ctx.fillStyle=col;ctx.font='700 16px "Space Grotesk",sans-serif';ctx.textBaseline='alphabetic';ctx.textAlign='left';
+  ctx.fillText(name+(susp?'  (suspensa)':''),x+12,y+24);
+  let yy=y+44;
+  for(const l of all){ctx.font=l.mono?'600 13px "JetBrains Mono",monospace':'500 13.5px "Space Grotesk",sans-serif';ctx.fillStyle=l.mono?th.text:th.muted;ctx.fillText(l.t,x+12,yy);yy+=19}
+  ctx.restore();return h;
+}
+
+/* Deadlock com duas contas */
+function deadlockFrames(){
+  const F=[];
+  const base=()=>({phase:'Sem ordem de aquisição',acc:{A:100,B:100},lock:{A:null,B:null},wait:{T1:null,T2:null},dead:false,st:{T1:'transferir(A → B, R$ 10)',T2:'transferir(B → A, R$ 20)'}});
+  let s=base();
+  const P=n=>F.push({n,s:structuredClone(s)});
+  P('Duas contas, cada uma com seu próprio lock (fine-grained locking). Ao mesmo tempo, T1 transfere R$ 10 de A para B e T2 transfere R$ 20 de B para A. Cada transferência precisa travar as duas contas.');
+  s.lock.A='T1';P('T1 trava primeiro a conta de origem: pega o lock de A.');
+  s.lock.B='T2';P('T2 faz o mesmo com a origem dela: pega o lock de B.');
+  s.wait.T1='B';P('T1 pede o lock de B para creditar o valor. O lock está com T2, então T1 espera, sem soltar A.');
+  s.wait.T2='A';s.dead=true;P('T2 pede o lock de A, que está com T1. Cada uma espera a outra: espera circular, ou seja, deadlock. Não há exceção nem timeout; só duas threads paradas para sempre.');
+  s=base();s.phase='Com ordem global: sempre A antes de B';
+  P('Correção mais usada: uma ordem global de aquisição. Toda transferência trava primeiro a conta de menor número, seja ela a origem ou o destino.');
+  s.lock.A='T1';P('T1 pega o lock de A, a primeira na ordem.');
+  s.wait.T2='A';P('T2 também precisa travar A primeiro, mesmo sendo o destino. A está com T1, então T2 espera, mas sem segurar nenhum lock.');
+  s.lock.B='T1';P('T1 pega o lock de B. Como T2 não segura nada, não há ciclo possível.');
+  s.acc={A:90,B:110};s.lock={A:'T2',B:null};s.wait.T2=null;s.st.T1='concluída';
+  P('T1 debita R$ 10 de A, credita em B e libera os dois locks. T2 recebe o lock de A.');
+  s.lock.B='T2';s.acc={A:110,B:90};P('T2 trava B, transfere R$ 20 de B para A e se prepara para liberar. O saldo total continua R$ 200.');
+  s.lock={A:null,B:null};s.st.T2='concluída';
+  P('Fim. Estruturas lock-free não têm deadlock, porque ninguém segura nada. Mas transferir atomicamente entre duas contas sem lock é difícil: é o problema da não composição dos slides.');
+  return F;
+}
+function drawDeadlock(ctx,w,h,s,th){
+  ctx.save();ctx.font='600 14px "Space Grotesk",sans-serif';ctx.fillStyle=th.muted;ctx.textAlign='left';ctx.fillText(s.phase,16,26);ctx.restore();
+  const bw=Math.min(190,w*0.27),bh=96,cy=h/2;
+  const ax=w*0.24,bx=w*0.76;
+  const lockPos={A:{x:ax+bw/2,y:cy},B:{x:bx-bw/2,y:cy}};
+  const tp={T1:{x:w/2,y:Math.max(66,h*0.17)},T2:{x:w/2,y:Math.min(h-72,h*0.83)}};
+  for(const k of ['A','B']){
+    const x=k==='A'?ax:bx;
+    ctx.save();ctx.fillStyle=th.surface;ctx.strokeStyle=th.mem;ctx.lineWidth=2.5;rr(ctx,x-bw/2,cy-bh/2,bw,bh,14);ctx.fill();ctx.stroke();
+    ctx.textAlign='center';ctx.fillStyle=th.muted;ctx.font='500 14px "Space Grotesk",sans-serif';ctx.fillText('Conta '+k,x,cy-14);
+    ctx.fillStyle=th.text;ctx.font='700 26px "JetBrains Mono",monospace';ctx.fillText('R$ '+s.acc[k],x,cy+22);ctx.restore();
+  }
+  for(const t of ['T1','T2']){
+    for(const k of ['A','B']){
+      if(s.lock[k]===t){const L=lockPos[k];ctx.save();ctx.strokeStyle=TC[t];ctx.lineWidth=4;ctx.beginPath();ctx.moveTo(tp[t].x,tp[t].y);ctx.lineTo(L.x,L.y);ctx.stroke();ctx.restore();
+        tag(ctx,(tp[t].x+L.x)/2,(tp[t].y+L.y)/2,'segura '+k,TC[t],th)}
+    }
+    if(s.wait[t]){const L=lockPos[s.wait[t]];arrow(ctx,tp[t].x,tp[t].y,L.x+(L.x<w/2?14:-14),L.y+(L.y>tp[t].y?-14:14),th.fail,{dash:[8,7],w:3});
+      tag(ctx,(tp[t].x*0.4+L.x*0.6),(tp[t].y*0.4+L.y*0.6),'espera '+s.wait[t],th.fail,th)}
+  }
+  for(const k of ['A','B']){const o=s.lock[k];padlock(ctx,lockPos[k].x,lockPos[k].y,o?TC[o]:th.muted,th)}
+  for(const t of ['T1','T2']){
+    const p=tp[t];ctx.save();ctx.fillStyle=th.surface;ctx.strokeStyle=TC[t];ctx.lineWidth=3.5;ctx.beginPath();ctx.arc(p.x,p.y,28,0,Math.PI*2);ctx.fill();ctx.stroke();
+    ctx.fillStyle=th.text;ctx.font='700 16px "Space Grotesk",sans-serif';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(t,p.x,p.y+1);
+    ctx.textBaseline='alphabetic';ctx.font='500 13.5px "Space Grotesk",sans-serif';ctx.fillStyle=th.muted;
+    ctx.fillText(s.st[t],p.x,t==='T1'?p.y-38:p.y+48);ctx.restore();
+  }
+  if(s.dead){ctx.save();ctx.textAlign='center';ctx.fillStyle=th.fail;ctx.font='700 18px "Space Grotesk",sans-serif';ctx.fillText('DEADLOCK',w/2,cy-6);ctx.font='500 13px "Space Grotesk",sans-serif';ctx.fillText('espera circular',w/2,cy+14);ctx.restore()}
+}
+
+/* ABA na pilha de Treiber com pool de nós */
+function abaFrames(ver){
+  const F=[];
+  const s={ver,top:'0x10',v:1,nodes:{'0x10':{l:'A',next:'0x20'},'0x20':{l:'B',next:'0x30'},'0x30':{l:'C',next:null}},pool:[],t1:{susp:false,lines:[{t:'ainda não começou'}]},t2:{lines:[{t:'ainda não começou'}]},hl:null,bad:false};
+  const P=n=>F.push({n,s:structuredClone(s)});
+  const topTxt=()=>ver?'('+s.top+', v'+s.v+')':s.top;
+  P('Pilha lock-free (Treiber) de transações pendentes, escrita em C. Um pool reaproveita a memória de nós removidos, como faz um alocador. '+(ver?'Aqui o topo guarda o ponteiro e um contador de versão, e o CAS compara os dois.':'Aqui o topo guarda só o ponteiro.'));
+  s.t1={susp:true,lines:[{t:'pop(): leu o topo e o próximo'},{t:'esperado = '+topTxt(),mono:true},{t:'next = 0x20',mono:true},{t:'ia fazer CAS(top, esperado, next), mas foi suspensa'}]};s.hl='0x10';
+  P('T1 começa um pop(): lê o topo '+topTxt()+' e A.next = 0x20. Antes de executar o CAS, o escalonador a suspende.');
+  s.top='0x20';s.v++;s.pool.push('0x10');s.t2={lines:[{t:'pop() removeu A; o nó 0x10 voltou ao pool'}]};s.hl='0x20';
+  P('T2 faz pop() e remove A. O nó 0x10 é devolvido ao pool de memória livre.');
+  s.top='0x30';s.v++;s.pool.push('0x20');s.t2={lines:[{t:'pop() removeu B; o nó 0x20 voltou ao pool'}]};s.hl='0x30';
+  P('T2 faz outro pop() e remove B. O nó 0x20 também vai para o pool.');
+  s.pool=s.pool.filter(a=>a!=='0x10');s.nodes['0x10']={l:'D',next:'0x30'};s.top='0x10';s.v++;s.t2={lines:[{t:'push(D) reaproveitou o nó 0x10'}]};s.hl='0x10';
+  P('T2 faz push(D). O pool reaproveita justamente o endereço 0x10 para o novo nó. O topo volta a ser 0x10'+(ver?', mas agora com versão v'+s.v+'.':', o mesmo valor que T1 leu.'));
+  if(!ver){
+    s.t1.susp=false;s.top='0x20';s.bad=true;s.hl='0x20';s.t1.lines=[{t:'acordou e executou'},{t:'CAS(top, 0x10, 0x20)',mono:true},{t:'sucesso: o topo era 0x10'}];
+    P('T1 acorda e executa CAS(top, 0x10, 0x20). O topo vale 0x10, então o CAS tem sucesso. Do ponto de vista de T1, nada mudou.');
+    P('Resultado: o topo aponta para 0x20, um nó que está no pool de memória livre, e a transação D, recém-empilhada, sumiu. O próximo push que reaproveitar 0x20 vai sobrescrever um nó que a pilha ainda usa. A falha aparece depois, longe da causa.');
+    P('Por quê: o CAS compara endereços, não a história. O endereço voltou a ser 0x10 porque a memória foi reciclada. Num contador de saldo isso não importa: se o saldo volta a 100, 100 é o valor certo. O perigo está em ponteiros reutilizados. Ative “Com versão” para ver a correção.');
+  } else {
+    s.t1.susp=false;s.hl='0x10';s.t1.lines=[{t:'acordou e executou'},{t:'CAS(top, (0x10, v1), …)',mono:true},{t:'falhou: o topo é (0x10, v'+s.v+')'}];
+    P('T1 acorda e executa o CAS esperando (0x10, v1). O endereço é o mesmo, mas a versão agora é v'+s.v+'. O CAS falha, como deveria.');
+    s.t1.lines=[{t:'releu o topo e tentou de novo'},{t:'CAS(top, (0x10, v'+s.v+'), (0x30, v'+(s.v+1)+'))',mono:true},{t:'sucesso: removeu D'}];
+    s.top='0x30';s.v++;s.pool.push('0x10');s.hl='0x30';
+    P('T1 relê o topo atual, (0x10, v4) com next = 0x30, e tenta de novo. Agora o CAS tem sucesso e remove D. A pilha está correta.');
+    P('A versão muda a cada alteração, então “o mesmo endereço” deixa de enganar o CAS. Em Java, AtomicStampedReference faz isso. Alternativas: hazard pointers e reclamação por épocas, que impedem o reuso enquanto alguém ainda lê o nó.');
+  }
+  return F;
+}
+function drawABA(ctx,w,h,s,th){
+  const nw=Math.min(150,w*0.22),nh=50;
+  const sx=w*0.17,px=w*0.45;
+  const reach=[];let cur=s.top;const seen={};
+  while(cur&&(s.bad||!s.pool.includes(cur))&&!seen[cur]){seen[cur]=1;reach.push(cur);cur=s.nodes[cur].next}
+  const lost=Object.keys(s.nodes).filter(a=>!reach.includes(a)&&!s.pool.includes(a));
+  const poolShow=s.pool.filter(a=>!reach.includes(a));
+  ctx.save();ctx.font='600 14px "Space Grotesk",sans-serif';ctx.fillStyle=th.muted;ctx.textAlign='center';
+  ctx.fillText('pilha',sx,26);ctx.fillText('pool de nós livres',px,26);ctx.restore();
+  const topY=58;
+  const topLabel=s.ver?'top = ('+s.top+', v'+s.v+')':'top = '+s.top;
+  tag(ctx,sx,topY,topLabel,s.bad?th.fail:th.mem,th);
+  const node=(a,x,y,state)=>{
+    const n=s.nodes[a];ctx.save();
+    const danger=state==='stack'&&s.pool.includes(a);
+    ctx.fillStyle=state==='pool'||danger?th.surface2:th.surface;
+    ctx.strokeStyle=state==='lost'||danger?th.fail:(s.hl===a?th.mem:th.line);ctx.lineWidth=s.hl===a||state==='lost'||danger?3:1.8;
+    if(state==='pool'||danger)ctx.setLineDash([5,4]);
+    rr(ctx,x-nw/2,y,nw,nh,10);ctx.fill();ctx.stroke();ctx.setLineDash([]);
+    ctx.textAlign='left';ctx.fillStyle=th.muted;ctx.font='600 12px "JetBrains Mono",monospace';ctx.fillText(a,x-nw/2+10,y+20);
+    ctx.fillStyle=danger?th.fail:(state==='pool'?th.muted:th.text);ctx.font='700 18px "Space Grotesk",sans-serif';ctx.fillText(danger?'livre!':(state==='pool'?'livre':'tx '+n.l),x-nw/2+10,y+41);
+    if(danger){ctx.font='600 12px "Space Grotesk",sans-serif';ctx.fillText('nó do pool dentro da pilha',x+nw/2+8,y+30)}
+    ctx.restore();
+  };
+  let y=topY+30;const pos={};
+  reach.forEach((a,i)=>{pos[a]={x:sx,y};node(a,sx,y,'stack');if(i<reach.length-1)arrow(ctx,sx,y+nh+2,sx,y+nh+20,th.muted,{w:2});y+=nh+22});
+  if(reach.length)arrow(ctx,sx,topY+12,sx,topY+28,s.bad?th.fail:th.mem,{w:2.5});
+  let py=topY+30;
+  poolShow.forEach(a=>{pos[a]={x:px,y:py};node(a,px,py,'pool');py+=nh+14});
+  if(lost.length){
+    let ly=Math.min(Math.max(py+20,h*0.62),h-(nh+14)*lost.length-30);
+    ctx.save();ctx.fillStyle=th.fail;ctx.font='600 14px "Space Grotesk",sans-serif';ctx.textAlign='center';ctx.fillText('fora da pilha e do pool: perdido',px,ly);ctx.restore();
+    lost.forEach(a=>{node(a,px,ly+12,'lost');ly+=nh+14});
+  }
+  const cx=w*0.67,cw=Math.min(w*0.31,330);
+  const h1=threadCard(ctx,cx,44,cw,'T1',s.t1.lines,TC.T1,th,s.t1.susp);
+  threadCard(ctx,cx,44+h1+18,cw,'T2',s.t2.lines,TC.T2,th,false);
+}
+
+/* Fila de Michael-Scott com ajuda mútua */
+function msFrames(){
+  const F=[];
+  const s={nodes:[{id:'S',l:'S',sent:true,linked:true},{id:'tx1',l:'tx1',linked:true}],float:null,head:'S',tail:'tx1',hl:null,t1:{susp:false,lines:[{t:'ocioso'}]},t2:{lines:[{t:'ocioso'}]},freed:null};
+  const P=n=>F.push({n,s:structuredClone(s)});
+  P('Fila de transações a processar. head aponta para o nó sentinela S; o primeiro elemento real é head.next (tx1). tail aponta para o último nó.');
+  s.float='tx2';s.t1={susp:false,lines:[{t:'enqueue(tx2)'},{t:'leu tail = tx1',mono:true},{t:'tx1.next é null: o fim é aqui'}]};
+  P('T1 começa enqueue(tx2): cria o nó, lê tail = tx1 e confirma que tx1.next é null.');
+  s.float=null;s.nodes.push({id:'tx2',l:'tx2',linked:true});s.hl={k:'next',id:'tx1'};s.t1.lines=[{t:'enqueue(tx2)'},{t:'CAS(tx1.next, null, tx2)',mono:true},{t:'sucesso: tx2 está na fila'}];
+  P('Primeiro CAS: CAS(tx1.next, null, tx2) tem sucesso. Esse é o ponto de linearização: tx2 já está na fila. Mas tail ainda aponta para tx1.');
+  s.hl=null;s.t1.susp=true;s.t1.lines=[{t:'enqueue(tx2)'},{t:'faltava CAS(tail, tx1, tx2)',mono:true},{t:'suspensa antes de avançar tail'}];
+  P('T1 é suspensa antes do segundo CAS. A fila está correta, só que tail ficou atrasado, apontando para o penúltimo nó.');
+  s.float='tx3';s.t2={lines:[{t:'enqueue(tx3)'},{t:'leu tail = tx1',mono:true},{t:'tx1.next não é null: tail está atrasado'}]};
+  P('T2 começa enqueue(tx3). Lê tail = tx1, mas tx1.next não é null. Alguém ligou um nó e ainda não avançou tail.');
+  s.tail='tx2';s.hl={k:'tail'};s.t2.lines=[{t:'ajuda mútua'},{t:'CAS(tail, tx1, tx2)',mono:true},{t:'avançou tail no lugar de T1'}];
+  P('Com lock, T2 teria de esperar T1 voltar. Aqui T2 ajuda: executa ela mesma CAS(tail, tx1, tx2). Ninguém depende de T1 continuar executando.');
+  s.float=null;s.nodes.push({id:'tx3',l:'tx3',linked:true});s.hl={k:'next',id:'tx2'};s.t2.lines=[{t:'enqueue(tx3), nova tentativa'},{t:'CAS(tx2.next, null, tx3)',mono:true},{t:'sucesso'}];
+  P('T2 recomeça: tail = tx2 e tx2.next é null. CAS(tx2.next, null, tx3) tem sucesso: tx3 entrou na fila.');
+  s.tail='tx3';s.hl={k:'tail'};s.t2.lines=[{t:'enqueue(tx3)'},{t:'CAS(tail, tx2, tx3)',mono:true},{t:'sucesso: terminou'}];
+  P('T2 avança tail com CAS(tail, tx2, tx3) e termina sua operação.');
+  s.t1={susp:false,lines:[{t:'acordou'},{t:'CAS(tail, tx1, tx2)',mono:true},{t:'falhou, e está tudo bem: já foi feito'}]};s.hl=null;
+  P('T1 acorda e tenta CAS(tail, tx1, tx2). Falha, porque tail já avançou. Não é erro: o trabalho dela foi feito por T2. T1 encerra o enqueue.');
+  s.head='tx1';s.freed='S';s.nodes[0].sent=false;s.nodes[1].sent=true;s.hl={k:'head'};s.t2={lines:[{t:'dequeue()'},{t:'CAS(head, S, tx1)',mono:true},{t:'devolveu tx1; tx1 vira o sentinela'}]};
+  P('Do outro lado da fila, T2 faz dequeue(): lê o valor de tx1 e executa CAS(head, S, tx1). tx1 é devolvido e seu nó passa a ser o novo sentinela. Produtores mexem em tail, consumidores em head, então quase não disputam entre si.');
+  return F;
+}
+function drawMS(ctx,w,h,s,th){
+  const list=s.nodes.filter(n=>n.linked&&n.id!==s.freed);
+  const nw=Math.min(118,w*0.15),nh=58,gap=Math.min(70,w*0.06);
+  const total=list.length*nw+(list.length-1)*gap;
+  const cw=Math.min(w*0.42,320);
+  const chMax=Math.max(cardH(ctx,cw,s.t1.lines),cardH(ctx,cw,s.t2.lines));
+  const cy=h-chMax-14;
+  const x0=(w-total)/2,ny=Math.max(58,Math.min(h*0.32,cy-2*nh-80));
+  const pos={};
+  list.forEach((n,i)=>{pos[n.id]={x:x0+i*(nw+gap),y:ny}});
+  if(s.freed){ctx.save();ctx.font='500 13px "Space Grotesk",sans-serif';ctx.fillStyle=th.muted;ctx.textAlign='right';ctx.fillText('S saiu da fila',x0-16,ny+nh/2+4);ctx.restore()}
+  list.forEach((n,i)=>{
+    const p=pos[n.id];ctx.save();ctx.fillStyle=n.sent?th.surface2:th.surface;ctx.strokeStyle=n.sent?th.muted:th.mem;ctx.lineWidth=2.2;
+    rr(ctx,p.x,p.y,nw,nh,10);ctx.fill();ctx.stroke();ctx.textAlign='center';
+    ctx.fillStyle=th.text;ctx.font='700 18px "Space Grotesk",sans-serif';ctx.fillText(n.l,p.x+nw/2,p.y+28);
+    ctx.fillStyle=th.muted;ctx.font='500 12px "Space Grotesk",sans-serif';ctx.fillText(n.sent?'sentinela':'transação',p.x+nw/2,p.y+46);ctx.restore();
+    if(i<list.length-1){const hot=s.hl&&s.hl.k==='next'&&s.hl.id===n.id;arrow(ctx,p.x+nw+3,p.y+nh/2,p.x+nw+gap-3,p.y+nh/2,hot?th.ok:th.muted,{w:hot?4:2.2})}
+  });
+  if(s.float){
+    const last=list[list.length-1];const p=pos[last.id];const fx=p.x+nw+gap,fy=Math.min(ny+nh+60,cy-nh-12);
+    ctx.save();ctx.fillStyle=th.surface;ctx.strokeStyle=th.mem;ctx.lineWidth=2;ctx.setLineDash([6,5]);rr(ctx,fx,fy,nw,nh,10);ctx.fill();ctx.stroke();ctx.setLineDash([]);
+    ctx.textAlign='center';ctx.fillStyle=th.text;ctx.font='700 18px "Space Grotesk",sans-serif';ctx.fillText(s.float,fx+nw/2,fy+28);
+    ctx.fillStyle=th.muted;ctx.font='500 12px "Space Grotesk",sans-serif';ctx.fillText('novo, ainda fora',fx+nw/2,fy+46);ctx.restore();
+  }
+  const pill=(label,id,dx,hot)=>{const p=pos[id];if(!p)return;const x=p.x+nw/2+dx,y=ny-40;tag(ctx,x,y,label,hot?th.ok:th.text,th);arrow(ctx,x,y+12,x,ny-4,hot?th.ok:th.muted,{w:hot?3.5:2})};
+  const same=s.head===s.tail;
+  pill('head',s.head,same?-28:0,s.hl&&s.hl.k==='head');
+  pill('tail',s.tail,same?28:0,s.hl&&s.hl.k==='tail');
+  threadCard(ctx,w*0.25-cw/2,cy,cw,'T1',s.t1.lines,TC.T1,th,s.t1.susp);
+  threadCard(ctx,w*0.75-cw/2,cy,cw,'T2',s.t2.lines,TC.T2,th,false);
+}
+
+const SCEN={
+  deadlock:{t:'Deadlock em transferências',s:'duas contas, um lock em cada',frames:()=>deadlockFrames(),draw:drawDeadlock},
+  aba:{t:'Problema ABA',s:'pilha de Treiber com reuso de nós',frames:v=>abaFrames(v),draw:drawABA,toggle:true},
+  ms:{t:'Fila de Michael-Scott',s:'dois CAS e ajuda mútua',frames:()=>msFrames(),draw:drawMS}
+};
+class Scenario{
+  constructor(key){
+    this.key=key;this.def=SCEN[key];this.ver=false;this.i=0;this.F=this.def.frames(this.ver);
+    const sec=document.createElement('section');sec.className='sim';
+    sec.innerHTML='<div class="sim-head"><h2></h2><p></p></div><div class="cv"><canvas role="img" class="scen"></canvas></div><div class="narr"><p class="stepno"></p><p class="narrtxt"></p></div><div class="stepbar"><button class="btn" data-a="prev">← Voltar</button><button class="btn primary" data-a="next">Próximo passo →</button><button class="btn" data-a="restart">Recomeçar</button></div>';
+    sec.querySelector('h2').textContent=this.def.t;sec.querySelector('p').textContent=this.def.s;
+    this.canvas=sec.querySelector('canvas');this.ctx=this.canvas.getContext('2d');
+    this.canvas.setAttribute('aria-label','Cenário passo a passo: '+this.def.t);
+    this.stepno=sec.querySelector('.stepno');this.narr=sec.querySelector('.narrtxt');
+    sec.querySelector('.narr').setAttribute('aria-live','polite');
+    if(this.def.toggle){
+      const tg=document.createElement('div');tg.className='seg';tg.setAttribute('role','group');tg.setAttribute('aria-label','Tipo de ponteiro do topo');
+      tg.innerHTML='<button class="mode" data-v="0" aria-pressed="true">Sem versão</button><button class="mode" data-v="1" aria-pressed="false">Com versão (ponteiro + contador)</button>';
+      tg.querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{this.ver=b.dataset.v==='1';tg.querySelectorAll('button').forEach(x=>x.setAttribute('aria-pressed',x===b?'true':'false'));this.F=this.def.frames(this.ver);this.i=0;this.sync()}));
+      sec.querySelector('.sim-head').after(tg);
+    }
+    sec.querySelectorAll('.stepbar button').forEach(b=>b.addEventListener('click',()=>this.act(b.dataset.a)));
+    this.prevBtn=sec.querySelector('[data-a=prev]');this.nextBtn=sec.querySelector('[data-a=next]');
+    this.el=sec;this.sync();
+  }
+  act(a){if(a==='next'&&this.i<this.F.length-1)this.i++;else if(a==='prev'&&this.i>0)this.i--;else if(a==='restart')this.i=0;this.sync()}
+  sync(){
+    this.stepno.textContent='Passo '+(this.i+1)+' de '+this.F.length;
+    this.narr.textContent=this.F[this.i].n;
+    this.prevBtn.disabled=this.i===0;this.nextBtn.disabled=this.i===this.F.length-1;
+  }
+  update(){}
+  draw(th){
+    const c=this.canvas,ctx=this.ctx,rect=c.getBoundingClientRect(),dpr=Math.min(window.devicePixelRatio||1,2);
+    const W=Math.round(rect.width*dpr),H=Math.round(rect.height*dpr);if(!W||!H)return;
+    if(c.width!==W||c.height!==H){c.width=W;c.height=H}
+    ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,rect.width,rect.height);
+    this.def.draw(ctx,rect.width,rect.height,this.F[this.i].s,th);
+  }
+}
+document.addEventListener('keydown',e=>{
+  const tgt=e.target;if(tgt&&(tgt.tagName==='INPUT'||tgt.tagName==='TEXTAREA'))return;
+  if(!SCEN[state.mode]){if(state.stepMode&&e.key==='ArrowRight'){stepOnce();e.preventDefault()}return}
+  const sc=state.sims[0];if(!sc)return;
+  if(e.key==='ArrowRight'){sc.act('next');e.preventDefault()}
+  if(e.key==='ArrowLeft'){sc.act('prev');e.preventDefault()}
+});
+
+function build(){
+  simsEl.innerHTML='';
+  const scen=!!SCEN[state.mode];
+  document.getElementById('contControls').hidden=scen;
+  document.getElementById('scenHint').hidden=!scen;
+  document.getElementById('legPanel').hidden=scen;
+  document.getElementById('logPanel').hidden=scen;
+  if(scen){simsEl.className='sims';state.sims=[new Scenario(state.mode)];}
+  else{
+  const kinds=state.mode==='compare'?['lock','cas']:[state.mode];
+  simsEl.className='sims'+(kinds.length>1?' two':'');
+  state.sims=kinds.map(k=>new Sim(k));
+  }
+  state.sims.forEach(s=>simsEl.append(s.el));
+  const ex=document.getElementById('explain');ex.innerHTML='';
+  EXPLAIN[state.mode].forEach(tx=>{const p=document.createElement('p');p.className='explain';p.textContent=tx;ex.append(p)});
+  document.querySelectorAll('.mode[data-mode]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.mode===state.mode?'true':'false'));
+  document.getElementById('tn').textContent=state.n;
+  logEl.innerHTML='';
+  state.running=!state.stepMode;state.pauseAfterTick=false;state.idle=0;
+  const pb=document.getElementById('play');if(pb)pb.textContent='Pausar';
+}
+
+document.querySelectorAll('.mode[data-mode]').forEach(b=>b.addEventListener('click',()=>{state.mode=b.dataset.mode;build()}));
+document.getElementById('tm').addEventListener('click',()=>{if(state.n>2){state.n--;build()}});
+document.getElementById('tp').addEventListener('click',()=>{if(state.n<8){state.n++;build()}});
+const speed=document.getElementById('speed');
+speed.addEventListener('input',()=>{state.speed=parseFloat(speed.value);document.getElementById('speedval').textContent=String(state.speed).replace('.',',')+'x'});
+const play=document.getElementById('play');
+const stepBtn=document.getElementById('stepBtn');
+function stepOnce(){state.running=true;state.pauseAfterTick=false;state.idle=0}
+stepBtn.addEventListener('click',stepOnce);
+function setRun(step){
+  state.stepMode=step;state.running=!step;state.pauseAfterTick=false;state.idle=0;
+  document.querySelectorAll('[data-run]').forEach(b=>b.setAttribute('aria-pressed',(b.dataset.run==='step')===step?'true':'false'));
+  stepBtn.hidden=!step;play.hidden=step;play.textContent='Pausar';
+  document.getElementById('runHint').hidden=!step;
+  state.sims.forEach(s=>{if(s.narrEl)s.narrEl.hidden=!step});
+}
+document.querySelectorAll('[data-run]').forEach(b=>b.addEventListener('click',()=>setRun(b.dataset.run==='step')));
+play.addEventListener('click',()=>{state.running=!state.running;play.textContent=state.running?'Pausar':'Continuar'});
+document.getElementById('reset').addEventListener('click',()=>build());
+document.getElementById('worst').addEventListener('click',()=>state.sims.forEach(s=>s.suspendWorst()));
+document.getElementById('resumeAll').addEventListener('click',()=>state.sims.forEach(s=>s.threads.forEach(t=>{if(t.suspended)s.toggle(t)})));
+
+let last=performance.now();
+function frame(now){
+  const raw=Math.min(now-last,60);last=now;
+  const th=theme();
+  for(const s of state.sims){if(state.running)s.update(raw*state.speed);s.draw(th)}
+  if(state.running&&state.stepMode&&!SCEN[state.mode]){
+    if(state.pauseAfterTick){state.running=false;state.pauseAfterTick=false}
+    else{state.idle+=raw*state.speed;
+      if(state.idle>7000){state.running=false;state.sims.forEach(s=>s.setNarr&&s.setNarr('Nenhum evento novo: as threads estão suspensas ou esperando umas pelas outras.','bad'))}}
+  }
+  requestAnimationFrame(frame);
+}
+build();
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
